@@ -5,31 +5,36 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     
-    // Log a snippet of the raw payload to the Vercel console just in case we need to see it
-    console.log("Raw Webhook Payload:", JSON.stringify(body).substring(0, 300));
-
-    // Safely extract the array, whether Outscraper wraps it in .data or sends it directly
+    // Safely extract the array of businesses
     const rawData = body.data ? body.data : (Array.isArray(body) ? body : []);
     const allResults = rawData.flat(); 
 
-    // Apply the Goldmine Filter (No website, or Facebook only)
+    // The Bulletproof Goldmine Filter
     const goldmineLeads = allResults.filter((place: any) => {
-      const site = place.site?.toLowerCase() || "";
-      return site === "" || site.includes("facebook.com");
+      // Check both 'site' and 'website' just in case Outscraper changes keys
+      const url = (place.site || place.website || "").toLowerCase();
+      
+      // Keep it if it has no website, says "null", or is a Facebook page
+      return url === "" || url === "null" || url.includes("facebook.com");
     });
 
     // Write the survivors to the database
     let savedCount = 0;
     for (const lead of goldmineLeads) {
-      const saved = await prisma.lead.upsert({
+      
+      // Safety check: Google occasionally returns leads without place_ids. Skip them.
+      if (!lead.place_id) continue;
+
+      await prisma.lead.upsert({
         where: { placeId: lead.place_id },
         update: {}, 
         create: {
-          name: lead.name,
+          name: lead.name || "Unknown Business",
           phone: lead.phone || "No phone",
-          suburb: lead.city || "Unknown", 
+          suburb: lead.city || lead.borough || "Unknown", 
           reviewCount: lead.reviews || 0,
-          website: lead.site || null,
+          // Save whichever web key Outscraper provided
+          website: lead.site || lead.website || null,
           placeId: lead.place_id,
         }
       });
