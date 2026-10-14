@@ -3,11 +3,14 @@ import prisma from '@/lib/prisma';
 
 export async function POST(request: Request) {
   try {
-    // Outscraper sends the data in the body of the request
     const body = await request.json();
     
-    // Outscraper results are nested in an array based on the queries we sent
-    const allResults = body.data.flat(); 
+    // Log a snippet of the raw payload to the Vercel console just in case we need to see it
+    console.log("Raw Webhook Payload:", JSON.stringify(body).substring(0, 300));
+
+    // Safely extract the array, whether Outscraper wraps it in .data or sends it directly
+    const rawData = body.data ? body.data : (Array.isArray(body) ? body : []);
+    const allResults = rawData.flat(); 
 
     // Apply the Goldmine Filter (No website, or Facebook only)
     const goldmineLeads = allResults.filter((place: any) => {
