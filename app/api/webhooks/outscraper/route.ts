@@ -5,40 +5,40 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     
-    // Safely extract the array of businesses
     const rawData = body.data ? body.data : (Array.isArray(body) ? body : []);
     const allResults = rawData.flat(); 
 
-    // The Bulletproof Goldmine Filter
-    const goldmineLeads = allResults.filter((place: any) => {
-      // Check both 'site' and 'website' just in case Outscraper changes keys
-      const url = (place.site || place.website || "").toLowerCase();
-      
-      // Keep it if it has no website, says "null", or is a Facebook page
-      return url === "" || url === "null" || url.includes("facebook.com");
-    });
-
-    // Write the survivors to the database
     let savedCount = 0;
-    for (const lead of goldmineLeads) {
-      
-      // Safety check: Google occasionally returns leads without place_ids. Skip them.
+
+    for (const lead of allResults) {
       if (!lead.place_id) continue;
 
-      await prisma.lead.upsert({
-        where: { placeId: lead.place_id },
-        update: {}, 
-        create: {
-          name: lead.name || "Unknown Business",
-          phone: lead.phone || "No phone",
-          suburb: lead.city || lead.borough || "Unknown", 
-          reviewCount: lead.reviews || 0,
-          // Save whichever web key Outscraper provided
-          website: lead.site || lead.website || null,
-          placeId: lead.place_id,
+      const url = (lead.site || lead.website || lead.url || "").toLowerCase();
+      const isGoldmine = url === "" || url === "null" || url.includes("facebook.com");
+
+      if (isGoldmine) {
+        // Extract a clean suburb name even if Outscraper returns null for city
+        let cleanSuburb = lead.city || lead.borough;
+        if (!cleanSuburb && lead.query) {
+          // Pull the location out of the query string (e.g., "Landscaper in Adelaide SA" -> "Adelaide SA")
+          const parts = lead.query.split(" in ");
+          cleanSuburb = parts[1] || "Adelaide";
         }
-      });
-      savedCount++;
+
+        await prisma.lead.upsert({
+          where: { placeId: lead.place_id },
+          update: {}, 
+          create: {
+            name: lead.name || "Unknown Business",
+            phone: lead.phone || "No phone",
+            suburb: cleanSuburb, 
+            reviewCount: lead.reviews || 0,
+            website: lead.website || lead.site || lead.url || null,
+            placeId: lead.place_id,
+          }
+        });
+        savedCount++;
+      }
     }
 
     console.log(`Webhook processed. ${savedCount} goldmine leads saved to database.`);
