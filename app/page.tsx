@@ -1,6 +1,7 @@
 "use client";
+"use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 
 export default function Dashboard() {
   const [keyword, setKeyword] = useState("");
@@ -9,7 +10,12 @@ export default function Dashboard() {
   const [jobStatus, setJobStatus] = useState<string | null>(null);
   const [leads, setLeads] = useState<any[]>([]);
 
-  // Fetches leads from your Postgres database
+  // Filtering & Sorting State
+  const [filterType, setFilterType] = useState("All");
+  const [filterAudit, setFilterAudit] = useState("All");
+  const [filterStatus, setFilterStatus] = useState("All");
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
+
   const fetchLeads = async () => {
     try {
       const res = await fetch("/api/leads");
@@ -21,19 +27,16 @@ export default function Dashboard() {
     }
   };
 
-  // Load leads on initial page load
   useEffect(() => {
     fetchLeads();
   }, []);
 
-  // The new Asynchronous Trigger
   const handleHunt = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setJobStatus(null);
 
     try {
-      // Pointing to the new trigger route
       const res = await fetch("/api/jobs/trigger", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -46,7 +49,7 @@ export default function Dashboard() {
       
       if (data.success) {
         setJobStatus(`Job initiated! Scraper is running in the background. Check back in a few minutes.`);
-        setKeyword(""); // Clear form for the next hunt
+        setKeyword(""); 
       } else {
         alert("Something went wrong triggering the job.");
       }
@@ -58,7 +61,6 @@ export default function Dashboard() {
     }
   };
 
-  // Updates lead status in the DB
   const updateStatus = async (id: string, newStatus: string) => {
     setLeads(leads.map(lead => lead.id === id ? { ...lead, status: newStatus } : lead));
     await fetch("/api/leads", {
@@ -68,15 +70,73 @@ export default function Dashboard() {
     });
   };
 
+  // --------------------------------------------------
+  // FILTERING & SORTING LOGIC
+  // --------------------------------------------------
+  const displayedLeads = useMemo(() => {
+    let processed = [...leads];
+
+    // 1. Filter by Type (Website / Facebook / Blank)
+    if (filterType !== "All") {
+      processed = processed.filter(lead => {
+        const url = lead.website || "";
+        if (filterType === "Blank") return url === "";
+        if (filterType === "Facebook") return url.includes("facebook.com");
+        if (filterType === "Website") return url !== "" && !url.includes("facebook.com");
+        return true;
+      });
+    }
+
+    // 2. Filter by Audit Status
+    if (filterAudit !== "All") {
+      processed = processed.filter(lead => lead.auditStatus === filterAudit);
+    }
+
+    // 3. Filter by CRM Status
+    if (filterStatus !== "All") {
+      processed = processed.filter(lead => lead.status === filterStatus);
+    }
+
+    // 4. Sorting
+    if (sortConfig) {
+      processed.sort((a, b) => {
+        const aVal = a[sortConfig.key];
+        const bVal = b[sortConfig.key];
+
+        // Push nulls to the bottom
+        if (aVal === null || aVal === undefined) return 1;
+        if (bVal === null || bVal === undefined) return -1;
+
+        if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+        if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+        return 0;
+      });
+    }
+
+    return processed;
+  }, [leads, filterType, filterAudit, filterStatus, sortConfig]);
+
+  const requestSort = (key: string) => {
+    let direction: 'asc' | 'desc' = 'asc';
+    if (sortConfig && sortConfig.key === key && sortConfig.direction === 'asc') {
+      direction = 'desc';
+    }
+    setSortConfig({ key, direction });
+  };
+
+  // Helper for rendering sort arrows
+  const getSortIcon = (key: string) => {
+    if (sortConfig?.key === key) {
+      return sortConfig.direction === 'asc' ? ' ↑' : ' ↓';
+    }
+    return '';
+  };
+
   return (
     <main className="min-h-screen bg-gray-50 p-6 md:p-8">
-      {/* 
-        This is the new layout wrapper. 
-        It forces 1 column on mobile, and 3 columns on large screens. 
-      */}
       <div className="max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
         
-        {/* LEFT COLUMN: The Search Form (Takes up 1/3 of the screen) */}
+        {/* LEFT COLUMN: The Search Form */}
         <div className="col-span-1 bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-fit">
           <h1 className="text-3xl font-bold text-gray-900 mb-2">Lead Hunter</h1>
           <p className="text-gray-500 mb-8">Grid search tradesmen who need a digital upgrade.</p>
@@ -116,7 +176,6 @@ export default function Dashboard() {
             </button>
           </form>
 
-          {/* Async Success Message */}
           {jobStatus && (
             <div className="mt-6 p-4 bg-blue-50 text-blue-800 rounded-lg border border-blue-200 text-sm">
               <p className="font-semibold">Hunt Complete!</p>
@@ -125,44 +184,95 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* RIGHT COLUMN: The Data Table (Takes up 2/3 of the screen) */}
+        {/* RIGHT COLUMN: The Data Table */}
         <div className="col-span-1 lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-[calc(100vh-4rem)]">
           
           {/* Table Header & Refresh Button */}
-          <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-            <h2 className="font-semibold text-gray-800">Database Records ({leads.length})</h2>
-            <button 
-              onClick={fetchLeads}
-              className="px-4 py-2 bg-white border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              Refresh Table
-            </button>
+          <div className="p-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center bg-gray-50 gap-4">
+            <h2 className="font-semibold text-gray-800">Database Records ({displayedLeads.length})</h2>
+            
+            {/* Filter Controls */}
+            <div className="flex flex-wrap gap-2">
+              <select 
+                value={filterType} 
+                onChange={(e) => setFilterType(e.target.value)}
+                className="text-sm border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black"
+              >
+                <option value="All">All Types</option>
+                <option value="Website">Website</option>
+                <option value="Facebook">Facebook</option>
+                <option value="Blank">Blank</option>
+              </select>
+
+              <select 
+                value={filterAudit} 
+                onChange={(e) => setFilterAudit(e.target.value)}
+                className="text-sm border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black"
+              >
+                <option value="All">All Audit Status</option>
+                <option value="Audited">Audited</option>
+                <option value="Pending">Pending</option>
+                <option value="Skipped">Skipped</option>
+                <option value="Failed">Failed</option>
+              </select>
+
+              <select 
+                value={filterStatus} 
+                onChange={(e) => setFilterStatus(e.target.value)}
+                className="text-sm border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black"
+              >
+                <option value="All">All CRM Status</option>
+                <option value="Uncontacted">Uncontacted</option>
+                <option value="Left Voicemail">Left Voicemail</option>
+                <option value="Meeting Booked">Meeting Booked</option>
+                <option value="Not Interested">Not Interested</option>
+              </select>
+
+              <button 
+                onClick={fetchLeads}
+                className="px-3 py-1.5 bg-white border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-100 transition-colors"
+              >
+                Refresh
+              </button>
+            </div>
           </div>
 
           {/* Scrollable Table Body */}
           <div className="overflow-x-auto overflow-y-auto flex-1">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full text-left border-collapse select-none">
               <thead className="sticky top-0 bg-gray-50 shadow-sm z-10">
                 <tr className="border-b border-gray-200">
-                  <th className="p-4 font-semibold text-gray-700">Business</th>
+                  <th className="p-4 font-semibold text-gray-700 cursor-pointer hover:bg-gray-100" onClick={() => requestSort('name')}>
+                    Business{getSortIcon('name')}
+                  </th>
                   <th className="p-4 font-semibold text-gray-700">Phone</th>
                   <th className="p-4 font-semibold text-gray-700">Link</th>
-                  <th className="p-4 font-semibold text-gray-700">Audit</th>
-                  <th className="p-4 font-semibold text-gray-700">Speed</th>
-                  <th className="p-4 font-semibold text-gray-700">SEO</th>
-                  <th className="p-4 font-semibold text-gray-700">Load</th>
-                  <th className="p-4 font-semibold text-gray-700 w-40">Status</th>
+                  <th className="p-4 font-semibold text-gray-700 cursor-pointer hover:bg-gray-100" onClick={() => requestSort('auditStatus')}>
+                    Audit{getSortIcon('auditStatus')}
+                  </th>
+                  <th className="p-4 font-semibold text-gray-700 cursor-pointer hover:bg-gray-100" onClick={() => requestSort('performanceScore')}>
+                    Speed{getSortIcon('performanceScore')}
+                  </th>
+                  <th className="p-4 font-semibold text-gray-700 cursor-pointer hover:bg-gray-100" onClick={() => requestSort('seoScore')}>
+                    SEO{getSortIcon('seoScore')}
+                  </th>
+                  <th className="p-4 font-semibold text-gray-700 cursor-pointer hover:bg-gray-100" onClick={() => requestSort('mobileLoadTime')}>
+                    Load{getSortIcon('mobileLoadTime')}
+                  </th>
+                  <th className="p-4 font-semibold text-gray-700 cursor-pointer hover:bg-gray-100 w-40" onClick={() => requestSort('status')}>
+                    Status{getSortIcon('status')}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {leads.length === 0 ? (
+                {displayedLeads.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="p-8 text-center text-gray-500">
-                      No leads found. Start a hunt or hit refresh.
+                      No leads match your filters.
                     </td>
                   </tr>
                 ) : (
-                  leads.map((lead) => (
+                  displayedLeads.map((lead) => (
                     <tr key={lead.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                       <td className="p-4">
                         <div className="font-medium text-gray-900">{lead.name}</div>
