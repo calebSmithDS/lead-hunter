@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "Lead" ADD COLUMN     "auditStatus" TEXT NOT NULL DEFAULT 'Pending',
+ADD COLUMN     "mobileLoadTime" DOUBLE PRECISION,
+ADD COLUMN     "performanceScore" INTEGER,
+ADD COLUMN     "seoScore" INTEGER,
+ADD COLUMN     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;

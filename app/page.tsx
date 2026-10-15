@@ -146,15 +146,18 @@ export default function Dashboard() {
                 <tr className="border-b border-gray-200">
                   <th className="p-4 font-semibold text-gray-700">Business</th>
                   <th className="p-4 font-semibold text-gray-700">Phone</th>
-                  <th className="p-4 font-semibold text-gray-700">Reviews</th>
                   <th className="p-4 font-semibold text-gray-700">Link</th>
+                  <th className="p-4 font-semibold text-gray-700">Audit</th>
+                  <th className="p-4 font-semibold text-gray-700">Speed</th>
+                  <th className="p-4 font-semibold text-gray-700">SEO</th>
+                  <th className="p-4 font-semibold text-gray-700">Load</th>
                   <th className="p-4 font-semibold text-gray-700 w-40">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {leads.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="p-8 text-center text-gray-500">
+                    <td colSpan={8} className="p-8 text-center text-gray-500">
                       No leads found. Start a hunt or hit refresh.
                     </td>
                   </tr>
@@ -166,14 +169,34 @@ export default function Dashboard() {
                         <div className="text-sm text-gray-500">{lead.suburb}</div>
                       </td>
                       <td className="p-4 text-gray-700">{lead.phone || "N/A"}</td>
-                      <td className="p-4 text-gray-700">{lead.reviewCount}</td>
                       <td className="p-4">
                         {lead.website ? (
-                          <a href={lead.website} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Facebook</a>
+                          <a href={lead.website.startsWith('http') ? lead.website : `https://${lead.website}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
+                            {lead.website.includes('facebook') ? 'Facebook' : 'Website'}
+                          </a>
                         ) : (
                           <span className="text-gray-400">Blank</span>
                         )}
                       </td>
+                      <td className="p-4">
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${
+                          lead.auditStatus === 'Audited' ? 'bg-green-100 text-green-800' :
+                          lead.auditStatus === 'Pending' ? 'bg-yellow-100 text-yellow-800' :
+                          lead.auditStatus === 'Failed' ? 'bg-red-100 text-red-800' :
+                          'bg-gray-100 text-gray-800'
+                        }`}>
+                          {lead.auditStatus}
+                        </span>
+                      </td>
+                      <td className="p-4">
+                        {lead.performanceScore ? (
+                          <span className={lead.performanceScore < 50 ? "text-red-600 font-bold" : "text-gray-900"}>
+                            {lead.performanceScore}
+                          </span>
+                        ) : "-"}
+                      </td>
+                      <td className="p-4 text-gray-700">{lead.seoScore || "-"}</td>
+                      <td className="p-4 text-gray-700">{lead.mobileLoadTime ? `${lead.mobileLoadTime}s` : "-"}</td>
                       <td className="p-4">
                         <select 
                           value={lead.status}

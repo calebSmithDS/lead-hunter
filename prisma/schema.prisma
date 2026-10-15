@@ -20,5 +20,13 @@ model Lead {
   website     String?  // Will hold the Facebook link or remain null
   placeId     String   @unique // Google's unique ID for deduplication
   status      String   @default("Uncontacted")
-  createdAt   DateTime @default(now())
+
+performanceScore Int?      // Overall mobile speed score (0-100)
+  seoScore         Int?      // Overall SEO score (0-100)
+  mobileLoadTime   Float?    // Time in seconds (e.g., Largest Contentful Paint)
+  
+  auditStatus      String    @default("Pending") // Pending, Audited, Skipped, Failed
+  
+ createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @default(now()) @updatedAt // Add @default(now()) right
 }

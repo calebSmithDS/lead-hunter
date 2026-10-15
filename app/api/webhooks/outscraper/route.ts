@@ -1,30 +1,34 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import axios from 'axios';
+import { Client } from '@upstash/qstash';
+
+// Initialize the QStash client
+const qstash = new Client({
+  token: process.env.QSTASH_TOKEN!,
+});
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     
-    // Check if Outscraper sent a results URL
     const resultsUrl = body.results_location;
     let allResults = [];
 
     if (resultsUrl) {
-      // Fetch the actual dataset from Outscraper using your API key
       const response = await axios.get(resultsUrl, {
         headers: { 'X-API-KEY': process.env.OUTSCRAPER_KEY }
       });
-      
       const rawData = response.data.data || response.data || [];
       allResults = rawData.flat();
     } else {
-      // Fallback in case it ever sends raw data directly
       const rawData = body.data ? body.data : (Array.isArray(body) ? body : []);
       allResults = rawData.flat();
     }
 
-    let savedCount = 0;
+    let goldminesCount = 0;
+    let queuedCount = 0;
+    let delaySeconds = 0;
 
     for (const lead of allResults) {
       if (!lead.place_id) continue;
@@ -32,13 +36,14 @@ export async function POST(request: Request) {
       const url = (lead.site || lead.website || lead.url || "").toLowerCase();
       const isGoldmine = url === "" || url === "null" || url.includes("facebook.com");
 
-      if (isGoldmine) {
-        let cleanSuburb = lead.city || lead.borough;
-        if (!cleanSuburb && lead.query) {
-          const parts = lead.query.split(" in ");
-          cleanSuburb = parts[1] || "Adelaide";
-        }
+      let cleanSuburb = lead.city || lead.borough;
+      if (!cleanSuburb && lead.query) {
+        const parts = lead.query.split(" in ");
+        cleanSuburb = parts[1] || "Adelaide";
+      }
 
+      if (isGoldmine) {
+        // BUCKET A: No custom website. Save and skip audit.
         await prisma.lead.upsert({
           where: { placeId: lead.place_id },
           update: {}, 
@@ -49,13 +54,43 @@ export async function POST(request: Request) {
             reviewCount: lead.reviews || 0,
             website: lead.site || lead.website || lead.url || null,
             placeId: lead.place_id,
+            auditStatus: "Skipped" 
           }
         });
-        savedCount++;
+        goldminesCount++;
+      } else {
+        // BUCKET B: Custom website exists. Save as Pending and queue for audit.
+        const savedLead = await prisma.lead.upsert({
+          where: { placeId: lead.place_id },
+          update: {}, 
+          create: {
+            name: lead.name || "Unknown Business",
+            phone: lead.phone || "No phone",
+            suburb: cleanSuburb, 
+            reviewCount: lead.reviews || 0,
+            website: lead.site || lead.website || lead.url || null,
+            placeId: lead.place_id,
+            auditStatus: "Pending" 
+          }
+        });
+
+        // Only queue it if it actually needs an audit
+        if (savedLead.auditStatus === "Pending" && savedLead.website) {
+          await qstash.publishJSON({
+            url: `${process.env.NEXT_PUBLIC_APP_URL}/api/jobs/audit`,
+            body: { 
+              leadId: savedLead.id, 
+              website: savedLead.website 
+            },
+            delay: delaySeconds
+          });
+          queuedCount++;
+          delaySeconds += 15;
+        }
       }
     }
 
-    console.log(`Webhook successfully fetched and processed. ${savedCount} goldmine leads saved to database.`);
+    console.log(`Webhook processed. ${goldminesCount} goldmines saved. ${queuedCount} sites queued for auditing.`);
     return NextResponse.json({ received: true });
 
   } catch (error) {
@@ -63,7 +98,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Webhook failed" }, { status: 500 });
   }
 }
-
 // testing route
 // import { NextResponse } from 'next/server';
 
