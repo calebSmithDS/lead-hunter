@@ -14,7 +14,8 @@ export async function POST(request: Request) {
     const urlToTest = website.startsWith('http') ? website : `https://${website}`;
 
     // Ping Google PageSpeed Insights (Mobile strategy)
-    const psiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(urlToTest)}&strategy=mobile&category=performance&category=seo`;
+    // Add &key=${process.env.GOOGLE_PSI_KEY} to the end of the URL
+const psiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(urlToTest)}&strategy=mobile&category=performance&category=seo&key=${process.env.GOOGLE_PSI_KEY}`; // contains my google api key
     
     const response = await axios.get(psiUrl);
     const lighthouse = response.data.lighthouseResult;
@@ -58,6 +59,6 @@ export async function POST(request: Request) {
       // Silent catch
     }
 
-    return NextResponse.json({ error: "Audit failed" }, { status: 500 });
+    return NextResponse.json({ error: "Audit failed" }, { status: 200 }); // 200 instead of 500 so it doesnt keep retrying
   }
 }
