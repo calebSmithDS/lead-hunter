@@ -26,11 +26,15 @@ export async function POST(request: Request) {
       allResults = rawData.flat();
     }
 
+    const uniqueLeads: any[] = Array.from(
+      new Map(allResults.filter((l: any) => l.place_id).map((l: any) => [l.place_id, l])).values()
+    );
+
     let goldminesCount = 0;
     let queuedCount = 0;
     let delaySeconds = 0;
 
-    for (const lead of allResults) {
+    for (const lead of uniqueLeads) {
       if (!lead.place_id) continue;
 
       const url = (lead.site || lead.website || lead.url || "").toLowerCase();
