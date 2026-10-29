@@ -1,8 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -11,22 +9,32 @@ datasource db {
   provider = "postgresql"
 }
 
-model Lead {
-  id          String   @id @default(cuid())
-  name        String
-  phone       String?
-  suburb      String
-  reviewCount Int
-  website     String?  // Will hold the Facebook link or remain null
-  placeId     String   @unique // Google's unique ID for deduplication
-  status      String   @default("Uncontacted")
+model Job {
+  id           String   @id @default(cuid())
+  outscraperId String   @unique // The job ID Outscraper returns — used to match the webhook callback
+  status       String   @default("Running") // Running, Done, Failed
+  keyword      String
+  location     String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
 
-performanceScore Int?      // Overall mobile speed score (0-100)
-  seoScore         Int?      // Overall SEO score (0-100)
-  mobileLoadTime   Float?    // Time in seconds (e.g., Largest Contentful Paint)
-  
-  auditStatus      String    @default("Pending") // Pending, Audited, Skipped, Failed
-  
- createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @default(now()) @updatedAt // Add @default(now()) right
+model Lead {
+  id               String   @id @default(cuid())
+  name             String
+  phone            String?
+  suburb           String
+  reviewCount      Int
+  website          String?  // Will hold the Facebook link or remain null
+  placeId          String   @unique // Google's unique ID for deduplication
+  status           String   @default("Uncontacted")
+
+  performanceScore Int?     // Overall mobile speed score (0-100)
+  seoScore         Int?     // Overall SEO score (0-100)
+  mobileLoadTime   Float?   // Time in seconds (Largest Contentful Paint)
+
+  auditStatus      String   @default("Pending") // Pending, Audited, Skipped, Failed
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now()) @updatedAt
 }

@@ -1,64 +1,35 @@
 import { NextResponse } from 'next/server';
-import prisma from '@/lib/prisma';
-import axios from 'axios';
+import { Receiver } from '@upstash/qstash';
+import { auditLead } from '@/lib/audit';
+
+const receiver = new Receiver({
+  currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY!,
+  nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY!,
+});
 
 export async function POST(request: Request) {
+  const rawBody = await request.text();
+  const signature = request.headers.get('upstash-signature') ?? '';
+
+  // Validate QStash signature when present
+  if (process.env.NODE_ENV === 'production' || signature) {
+    const isValid = await receiver.verify({
+      signature,
+      body: rawBody,
+    }).catch(() => false);
+
+    if (!isValid) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+  }
+
   try {
-    const { leadId, website } = await request.json();
+    const { leadId, website } = JSON.parse(rawBody);
+    const result = await auditLead(leadId, website);
 
-    if (!leadId || !website) {
-      return NextResponse.json({ error: "Missing leadId or website" }, { status: 400 });
-    }
-
-    // Ensure URL has a protocol for the Google API
-    const urlToTest = website.startsWith('http') ? website : `https://${website}`;
-
-    // Ping Google PageSpeed Insights (Mobile strategy)
-    // Add &key=${process.env.GOOGLE_PSI_KEY} to the end of the URL
-const psiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(urlToTest)}&strategy=mobile&category=performance&category=seo&key=${process.env.GOOGLE_PSI_KEY}`; // contains my google api key
-    
-    const response = await axios.get(psiUrl);
-    const lighthouse = response.data.lighthouseResult;
-
-    // Lighthouse returns scores as decimals (e.g., 0.45). Multiply by 100 for standard 0-100 format.
-    const performanceScore = Math.round((lighthouse.categories.performance?.score || 0) * 100);
-    const seoScore = Math.round((lighthouse.categories.seo?.score || 0) * 100);
-    
-    // Largest Contentful Paint (LCP) is returned in milliseconds. Convert to seconds.
-    const lcpMs = lighthouse.audits['largest-contentful-paint']?.numericValue || 0;
-    const mobileLoadTime = parseFloat((lcpMs / 1000).toFixed(2));
-
-    // Update the record in Neon
-    await prisma.lead.update({
-      where: { id: leadId },
-      data: {
-        performanceScore,
-        seoScore,
-        mobileLoadTime,
-        auditStatus: "Audited",
-      },
-    });
-
-    console.log(`Audited ${website}: Performance ${performanceScore}, LCP ${mobileLoadTime}s`);
-    return NextResponse.json({ success: true });
-
-  } catch (error) {
-    console.error(`Audit failed for website:`, error);
-    
-    // If the website is dead or blocks bots, catch the failure and update the status
-    // so QStash doesn't get stuck infinitely retrying a broken URL
-    try {
-      const { leadId } = await request.clone().json();
-      if (leadId) {
-        await prisma.lead.update({
-          where: { id: leadId },
-          data: { auditStatus: "Failed" },
-        });
-      }
-    } catch (e) {
-      // Silent catch
-    }
-
-    return NextResponse.json({ error: "Audit failed" }, { status: 200 }); // 200 instead of 500 so it doesnt keep retrying
+    // Return 200 even if audit failed so QStash doesn't spam retries on dead websites
+    return NextResponse.json(result, { status: 200 });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message || 'Audit queue failed' }, { status: 500 });
   }
 }
