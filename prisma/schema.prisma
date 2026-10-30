@@ -1,12 +1,16 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+enum PhoneStatus {
+  PENDING
+  VERIFIED_MOBILE
+  LANDLINE_ONLY
+  UNAVAILABLE
 }
 
 model Job {
@@ -20,21 +24,39 @@ model Job {
 }
 
 model Lead {
-  id               String   @id @default(cuid())
-  name             String
-  phone            String?
-  suburb           String
-  reviewCount      Int
-  website          String?  // Will hold the Facebook link or remain null
-  placeId          String   @unique // Google's unique ID for deduplication
-  status           String   @default("Uncontacted")
+  id                  String      @id @default(cuid())
+  name                String
+  phone               String?
+  suburb              String
+  reviewCount         Int
+  website             String?     // Will hold website or Facebook link or null
+  placeId             String      @unique // Google's unique ID for deduplication
+  status              String      @default("Uncontacted") // CRM status: Uncontacted, Left Voicemail, etc.
 
-  performanceScore Int?     // Overall mobile speed score (0-100)
-  seoScore         Int?     // Overall SEO score (0-100)
-  mobileLoadTime   Float?   // Time in seconds (Largest Contentful Paint)
+  // Mobile Enrichment (Specification 2.1)
+  mobileNumber        String?
+  phoneStatus         PhoneStatus @default(PENDING)
+  phoneSource         String?     // 'OUTSCRAPER' | 'SCRAPE'
 
-  auditStatus      String   @default("Pending") // Pending, Audited, Skipped, Failed
+  // Owner Name Enrichment
+  ownerName           String?
+  ownerConfidence     String?     // 'HIGH' | 'MEDIUM' | 'LOW'
 
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @default(now()) @updatedAt
+  // PageSpeed Audit (Specification 2.2)
+  psiPerformanceScore Int?
+  psiSeoScore         Int?
+  psiAccessibility    Int?
+  psiBestPractices    Int?
+  psiLcpMs            Int?
+  mobileScreenshot    String?     @db.Text
+
+  // Stack Enrichment (Specification 2.3)
+  techStackCms        String?
+
+  // Pipeline Observability (Specification 3 & 4)
+  auditStatus         String      @default("PENDING") // PENDING, SUCCESS, PARTIAL_FAIL, FAILED, SKIPPED
+  auditErrorLog       Json?       // Stores specific service failures e.g., { "pagespeed": "Timeout", "wappalyzer": "Unreachable" }
+
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @default(now()) @updatedAt
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { Receiver } from '@upstash/qstash';
+import prisma from '@/lib/prisma';
 import { auditLead } from '@/lib/audit';
 
 const receiver = new Receiver({
@@ -25,11 +26,35 @@ export async function POST(request: Request) {
 
   try {
     const { leadId, website } = JSON.parse(rawBody);
+
+    if (!leadId || !website) {
+      return NextResponse.json({ error: 'Missing leadId or website' }, { status: 400 });
+    }
+
+    // Specification 4: Idempotency Protection
+    // If auditStatus is already SUCCESS or PARTIAL_FAIL, exit immediately with HTTP 200
+    const existingLead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: { auditStatus: true },
+    });
+
+    const isAlreadyAudited =
+      existingLead &&
+      ['SUCCESS', 'PARTIAL_FAIL', 'Audited', 'SKIPPED'].includes(existingLead.auditStatus);
+
+    if (isAlreadyAudited) {
+      console.log(`[Idempotency] Lead ${leadId} has status '${existingLead.auditStatus}'. Skipping.`);
+      return NextResponse.json(
+        { message: 'Lead already audited or skipped', status: existingLead.auditStatus, skipped: true },
+        { status: 200 }
+      );
+    }
+
     const result = await auditLead(leadId, website);
 
-    // Return 200 even if audit failed so QStash doesn't spam retries on dead websites
+    // Return 200 so QStash doesn't repeat retries on dead sites
     return NextResponse.json(result, { status: 200 });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message || 'Audit queue failed' }, { status: 500 });
+    return NextResponse.json({ error: error.message || 'Audit worker failed' }, { status: 500 });
   }
 }

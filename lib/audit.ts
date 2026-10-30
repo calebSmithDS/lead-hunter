@@ -1,62 +1,92 @@
 import prisma from '@/lib/prisma';
-import axios from 'axios';
+import { runPageSpeedAudit, PageSpeedResult } from '@/lib/services/PageSpeedService';
+import { detectTechStack, TechStackResult } from '@/lib/services/TechStackService';
 
-export interface AuditResult {
+export interface ComprehensiveAuditResult {
   success: boolean;
-  performanceScore?: number;
-  seoScore?: number;
-  mobileLoadTime?: number;
-  error?: string;
+  auditStatus: 'SUCCESS' | 'PARTIAL_FAIL' | 'FAILED';
+  pageSpeed: PageSpeedResult | null;
+  techStack: TechStackResult | null;
+  errorLog?: Record<string, string>;
 }
 
 /**
- * Audits a single website URL using Google PageSpeed Insights (Mobile)
- * and updates the lead record in the database.
+ * Executes concurrent PageSpeed and TechStack audits for a lead using Promise.allSettled().
+ * Supports Graceful Degradation & Error Logging per Specification 4.
  */
-export async function auditLead(leadId: string, website: string): Promise<AuditResult> {
+export async function auditLead(leadId: string, website: string): Promise<ComprehensiveAuditResult> {
   if (!leadId || !website) {
-    return { success: false, error: 'Missing leadId or website' };
+    return {
+      success: false,
+      auditStatus: 'FAILED',
+      pageSpeed: null,
+      techStack: null,
+      errorLog: { general: 'Missing leadId or website' },
+    };
   }
 
-  // Ensure URL has a protocol for Google's API
-  const cleanUrl = website.trim();
-  const urlToTest = cleanUrl.startsWith('http') ? cleanUrl : `https://${cleanUrl}`;
+  // Execute both intensive third-party audits concurrently
+  const [psiResultSettled, techResultSettled] = await Promise.allSettled([
+    runPageSpeedAudit(website),
+    detectTechStack(website),
+  ]);
 
-  const psiKey = process.env.GOOGLE_PSI_KEY;
-  const psiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(
-    urlToTest
-  )}&strategy=mobile&category=performance&category=seo&key=${psiKey}`;
+  const psiData: PageSpeedResult | null =
+    psiResultSettled.status === 'fulfilled' ? psiResultSettled.value : null;
+  const techData: TechStackResult | null =
+    techResultSettled.status === 'fulfilled' ? techResultSettled.value : null;
 
-  try {
-    const response = await axios.get(psiUrl, { timeout: 45000 });
-    const lighthouse = response.data.lighthouseResult;
+  const errorLog: Record<string, string> = {};
 
-    const performanceScore = Math.round((lighthouse.categories.performance?.score || 0) * 100);
-    const seoScore = Math.round((lighthouse.categories.seo?.score || 0) * 100);
-    const lcpMs = lighthouse.audits['largest-contentful-paint']?.numericValue || 0;
-    const mobileLoadTime = parseFloat((lcpMs / 1000).toFixed(2));
-
-    await prisma.lead.update({
-      where: { id: leadId },
-      data: {
-        performanceScore,
-        seoScore,
-        mobileLoadTime,
-        auditStatus: 'Audited',
-      },
-    });
-
-    return { success: true, performanceScore, seoScore, mobileLoadTime };
-  } catch (error: any) {
-    const errMsg = error.response?.data?.error?.message || error.message || 'Audit failed';
-    console.warn(`Audit failed for ${leadId} (${urlToTest}):`, errMsg);
-
-    await prisma.lead.update({
-      where: { id: leadId },
-      data: { auditStatus: 'Failed' },
-    });
-
-    return { success: false, error: errMsg };
+  if (!psiData || !psiData.success) {
+    errorLog.pagespeed =
+      psiData?.error || (psiResultSettled.status === 'rejected' ? String(psiResultSettled.reason) : 'Unknown failure');
   }
+
+  if (!techData || !techData.success) {
+    errorLog.wappalyzer =
+      techData?.error || (techResultSettled.status === 'rejected' ? String(techResultSettled.reason) : 'Unknown failure');
+  }
+
+  // Determine Pipeline Status
+  const psiOk = !!(psiData && psiData.success);
+  const techOk = !!(techData && techData.success);
+
+  let auditStatus: 'SUCCESS' | 'PARTIAL_FAIL' | 'FAILED' = 'FAILED';
+  if (psiOk && techOk) {
+    auditStatus = 'SUCCESS';
+  } else if (psiOk || techOk) {
+    auditStatus = 'PARTIAL_FAIL';
+  } else {
+    auditStatus = 'FAILED';
+  }
+
+  // Update Database with extracted audit & tech stack metrics
+  await prisma.lead.update({
+    where: { id: leadId },
+    data: {
+      // PageSpeed metrics
+      psiPerformanceScore: psiData?.performanceScore ?? null,
+      psiSeoScore: psiData?.seoScore ?? null,
+      psiAccessibility: psiData?.accessibilityScore ?? null,
+      psiBestPractices: psiData?.bestPracticesScore ?? null,
+      psiLcpMs: psiData?.lcpMs ?? null,
+      mobileScreenshot: psiData?.mobileScreenshot ?? null,
+
+      // Tech Stack
+      techStackCms: techData?.summary ?? techData?.cms ?? null,
+
+      // Observability
+      auditStatus,
+      auditErrorLog: Object.keys(errorLog).length > 0 ? errorLog : undefined,
+    },
+  });
+
+  return {
+    success: auditStatus !== 'FAILED',
+    auditStatus,
+    pageSpeed: psiData,
+    techStack: techData,
+    errorLog: Object.keys(errorLog).length > 0 ? errorLog : undefined,
+  };
 }
-

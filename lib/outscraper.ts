@@ -1,6 +1,8 @@
 import prisma from '@/lib/prisma';
 import axios from 'axios';
 import { Client } from '@upstash/qstash';
+import { enrichPhoneNumber } from '@/lib/services/PhoneService';
+import { extractOwnerName } from '@/lib/services/OwnerNameService';
 
 const qstash = new Client({
   token: process.env.QSTASH_TOKEN!,
@@ -19,7 +21,8 @@ export async function processOutscraperResults(allResults: any[], outscraperJobI
   for (const lead of uniqueLeads) {
     if (!lead.place_id) continue;
 
-    const url = (lead.site || lead.website || lead.url || '').toLowerCase();
+    const rawWebsite = lead.site || lead.website || lead.url || null;
+    const url = (rawWebsite || '').toLowerCase();
     const isGoldmine = url === '' || url === 'null' || url.includes('facebook.com');
 
     let cleanSuburb = lead.city || lead.borough;
@@ -28,37 +31,50 @@ export async function processOutscraperResults(allResults: any[], outscraperJobI
       cleanSuburb = parts[1] || 'Adelaide';
     }
 
+    // Specification 2.1: Mobile Number Extraction & Validation
+    const phoneEnrichment = await enrichPhoneNumber(lead.phone, rawWebsite);
+
+    // Owner Name Extraction
+    const ownerEnrichment = await extractOwnerName(lead.name || '', rawWebsite);
+
+    const baseData = {
+      name: lead.name || 'Unknown Business',
+      phone: lead.phone || null,
+      suburb: cleanSuburb,
+      reviewCount: lead.reviews || 0,
+      website: rawWebsite,
+      mobileNumber: phoneEnrichment.number,
+      phoneStatus: phoneEnrichment.status,
+      phoneSource: phoneEnrichment.source,
+      ownerName: ownerEnrichment.name,
+      ownerConfidence: ownerEnrichment.confidence,
+    };
+
     if (isGoldmine) {
+      // Bucket A: No custom website. Skipped from PageSpeed/CMS audit.
       await prisma.lead.upsert({
         where: { placeId: lead.place_id },
         update: {},
         create: {
-          name: lead.name || 'Unknown Business',
-          phone: lead.phone || 'No phone',
-          suburb: cleanSuburb,
-          reviewCount: lead.reviews || 0,
-          website: lead.site || lead.website || lead.url || null,
+          ...baseData,
           placeId: lead.place_id,
-          auditStatus: 'Skipped',
+          auditStatus: 'SKIPPED',
         },
       });
       goldminesCount++;
     } else {
+      // Bucket B: Custom website exists. Save as PENDING and queue to QStash
       const savedLead = await prisma.lead.upsert({
         where: { placeId: lead.place_id },
         update: {},
         create: {
-          name: lead.name || 'Unknown Business',
-          phone: lead.phone || 'No phone',
-          suburb: cleanSuburb,
-          reviewCount: lead.reviews || 0,
-          website: lead.site || lead.website || lead.url || null,
+          ...baseData,
           placeId: lead.place_id,
-          auditStatus: 'Pending',
+          auditStatus: 'PENDING',
         },
       });
 
-      if (savedLead.auditStatus === 'Pending' && savedLead.website) {
+      if (savedLead.auditStatus === 'PENDING' && savedLead.website) {
         try {
           await qstash.publishJSON({
             url: `${process.env.NEXT_PUBLIC_APP_URL}/api/jobs/audit`,
@@ -67,7 +83,7 @@ export async function processOutscraperResults(allResults: any[], outscraperJobI
               website: savedLead.website,
             },
             delay: delaySeconds,
-            retries: 2, // Auto-retry up to 2 times for transient network errors
+            retries: 2, // Auto-retry for transient network hiccups
           });
           queuedCount++;
           delaySeconds += 15;
@@ -96,7 +112,6 @@ export async function processOutscraperResults(allResults: any[], outscraperJobI
  * Polls Outscraper directly for a job's results and processes them.
  */
 export async function syncOutscraperJob(jobId: string) {
-  // Find internal job or outscraperId
   const job = await prisma.job.findFirst({
     where: {
       OR: [{ id: jobId }, { outscraperId: jobId }],
@@ -120,4 +135,3 @@ export async function syncOutscraperJob(jobId: string) {
 
   return { status, totalFound: allResults.length };
 }
-

@@ -37,7 +37,6 @@ function ProgressPanel({
   if (huntState === "running") {
     return (
       <div className="mt-6 rounded-xl border border-blue-200 bg-blue-50 p-5 space-y-4">
-        {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <PulsingDot />
@@ -53,18 +52,15 @@ function ProgressPanel({
           </button>
         </div>
 
-        {/* Big counter */}
         <div className="text-center py-2">
           <p className="text-5xl font-bold text-blue-700 tabular-nums">{leadsFound}</p>
           <p className="text-sm text-blue-600 mt-1">leads saved so far</p>
         </div>
 
-        {/* Indeterminate animated bar */}
         <div className="w-full bg-blue-100 rounded-full h-1.5 overflow-hidden">
           <div className="h-1.5 bg-blue-500 rounded-full animate-[shimmer_1.5s_ease-in-out_infinite] w-1/3" />
         </div>
 
-        {/* Context */}
         <div className="text-xs text-blue-600 space-y-0.5">
           <p><span className="font-medium">Industries:</span> {keyword || "—"}</p>
           <p><span className="font-medium">Locations:</span> {location || "—"}</p>
@@ -144,11 +140,13 @@ export default function Dashboard() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [auditingLeadId, setAuditingLeadId] = useState<string | null>(null);
   const [isBulkAuditing, setIsBulkAuditing] = useState(false);
+  const [previewScreenshot, setPreviewScreenshot] = useState<{ name: string; img: string } | null>(null);
 
   // Filtering & Sorting State
   const [filterType, setFilterType] = useState("All");
   const [filterAudit, setFilterAudit] = useState("All");
   const [filterStatus, setFilterStatus] = useState("All");
+  const [filterPhone, setFilterPhone] = useState("All");
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -198,7 +196,6 @@ export default function Dashboard() {
     [fetchLeads, stopPolling]
   );
 
-  // On mount: load leads and resume any in-progress job
   useEffect(() => {
     fetchLeads();
 
@@ -249,7 +246,6 @@ export default function Dashboard() {
     setActiveJobId(null);
   };
 
-  // Force sync from Outscraper if webhook dropped
   const handleForceSync = async () => {
     const idToSync = activeJobId || localStorage.getItem("activeJobId");
     if (!idToSync) return;
@@ -277,7 +273,6 @@ export default function Dashboard() {
     }
   };
 
-  // Manual single lead audit
   const handleSingleAudit = async (leadId: string) => {
     setAuditingLeadId(leadId);
     try {
@@ -290,7 +285,7 @@ export default function Dashboard() {
       if (data.success) {
         await fetchLeads();
       } else {
-        alert(`Audit failed: ${data.error || "Unknown error"}`);
+        alert(`Audit result: ${data.auditStatus || "Failed"} - ${JSON.stringify(data.errorLog || data.error)}`);
         await fetchLeads();
       }
     } catch (err: any) {
@@ -300,8 +295,7 @@ export default function Dashboard() {
     }
   };
 
-  // Manual bulk audit for all failed or pending leads
-  const handleBulkAudit = async (statusFilter = "Pending") => {
+  const handleBulkAudit = async (statusFilter = "PENDING") => {
     setIsBulkAuditing(true);
     try {
       const res = await fetch("/api/leads/audit/bulk", {
@@ -333,6 +327,7 @@ export default function Dashboard() {
   const displayedLeads = useMemo(() => {
     let processed = [...leads];
 
+    // Filter by Type
     if (filterType !== "All") {
       processed = processed.filter((lead) => {
         const url = lead.website || "";
@@ -343,14 +338,34 @@ export default function Dashboard() {
       });
     }
 
-    if (filterAudit !== "All") {
-      processed = processed.filter((lead) => lead.auditStatus === filterAudit);
+    // Filter by Phone Type
+    if (filterPhone !== "All") {
+      processed = processed.filter((lead) => {
+        if (filterPhone === "Mobile") return lead.phoneStatus === "VERIFIED_MOBILE";
+        if (filterPhone === "Landline") return lead.phoneStatus === "LANDLINE_ONLY";
+        return true;
+      });
     }
 
+    // Filter by Audit Status
+    if (filterAudit !== "All") {
+      processed = processed.filter((lead) => {
+        const s = (lead.auditStatus || "").toUpperCase();
+        if (filterAudit === "Audited") return s === "SUCCESS" || s === "AUDITED";
+        if (filterAudit === "Partial") return s === "PARTIAL_FAIL";
+        if (filterAudit === "Pending") return s === "PENDING";
+        if (filterAudit === "Skipped") return s === "SKIPPED";
+        if (filterAudit === "Failed") return s === "FAILED";
+        return true;
+      });
+    }
+
+    // Filter by CRM Status
     if (filterStatus !== "All") {
       processed = processed.filter((lead) => lead.status === filterStatus);
     }
 
+    // Sorting
     if (sortConfig) {
       processed.sort((a, b) => {
         const aVal = a[sortConfig.key];
@@ -364,10 +379,16 @@ export default function Dashboard() {
     }
 
     return processed;
-  }, [leads, filterType, filterAudit, filterStatus, sortConfig]);
+  }, [leads, filterType, filterAudit, filterStatus, filterPhone, sortConfig]);
 
-  const failedCount = useMemo(() => leads.filter((l) => l.auditStatus === "Failed").length, [leads]);
-  const pendingCount = useMemo(() => leads.filter((l) => l.auditStatus === "Pending" && l.website).length, [leads]);
+  const failedCount = useMemo(
+    () => leads.filter((l) => (l.auditStatus || "").toUpperCase() === "FAILED").length,
+    [leads]
+  );
+  const pendingCount = useMemo(
+    () => leads.filter((l) => (l.auditStatus || "").toUpperCase() === "PENDING" && l.website).length,
+    [leads]
+  );
 
   const requestSort = (key: string) => {
     setSortConfig((prev) =>
@@ -393,7 +414,6 @@ export default function Dashboard() {
           <h1 className="text-3xl font-bold text-gray-900 mb-1">Lead Hunter</h1>
           <p className="text-gray-500 mb-6">Grid search tradesmen who need a digital upgrade.</p>
 
-          {/* Form — hidden while a job is running */}
           {huntState === "idle" && (
             <form onSubmit={handleHunt} className="space-y-5">
               <div>
@@ -431,7 +451,6 @@ export default function Dashboard() {
             </form>
           )}
 
-          {/* Progress / Result panel */}
           <ProgressPanel
             huntState={huntState}
             leadsFound={leadsFound}
@@ -452,7 +471,6 @@ export default function Dashboard() {
               <h2 className="font-semibold text-gray-800">
                 Database Records <span className="text-gray-500 font-normal">({displayedLeads.length})</span>
               </h2>
-              {/* Live indicator — visible while a hunt is running */}
               {isRunning && (
                 <span className="flex items-center gap-1.5 text-xs text-blue-600 font-medium bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
                   <PulsingDot />
@@ -465,10 +483,10 @@ export default function Dashboard() {
             <div className="flex flex-wrap items-center gap-2">
               {failedCount > 0 && (
                 <button
-                  onClick={() => handleBulkAudit("Failed")}
+                  onClick={() => handleBulkAudit("FAILED")}
                   disabled={isBulkAuditing}
                   className="px-2.5 py-1.5 text-xs font-semibold rounded-md border border-red-300 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-50"
-                  title="Retry Google PageSpeed audit on all failed websites"
+                  title="Retry audit on all failed websites"
                 >
                   {isBulkAuditing ? "Auditing..." : `Retry Failed (${failedCount})`}
                 </button>
@@ -476,7 +494,7 @@ export default function Dashboard() {
 
               {pendingCount > 0 && (
                 <button
-                  onClick={() => handleBulkAudit("Pending")}
+                  onClick={() => handleBulkAudit("PENDING")}
                   disabled={isBulkAuditing}
                   className="px-2.5 py-1.5 text-xs font-semibold rounded-md border border-yellow-300 bg-yellow-50 text-yellow-800 hover:bg-yellow-100 disabled:opacity-50"
                   title="Audit pending websites now"
@@ -486,9 +504,19 @@ export default function Dashboard() {
               )}
 
               <select
+                value={filterPhone}
+                onChange={(e) => setFilterPhone(e.target.value)}
+                className="text-xs font-medium border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
+              >
+                <option value="All">All Phones</option>
+                <option value="Mobile">📱 Mobiles Only</option>
+                <option value="Landline">📞 Landlines Only</option>
+              </select>
+
+              <select
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value)}
-                className="text-sm border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                className="text-xs border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
               >
                 <option value="All">All Types</option>
                 <option value="Website">Website</option>
@@ -499,10 +527,11 @@ export default function Dashboard() {
               <select
                 value={filterAudit}
                 onChange={(e) => setFilterAudit(e.target.value)}
-                className="text-sm border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                className="text-xs border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
               >
-                <option value="All">All Audit Status</option>
-                <option value="Audited">Audited</option>
+                <option value="All">All Audits</option>
+                <option value="Audited">Audited (Success)</option>
+                <option value="Partial">Partial Fail</option>
                 <option value="Pending">Pending</option>
                 <option value="Skipped">Skipped</option>
                 <option value="Failed">Failed</option>
@@ -511,7 +540,7 @@ export default function Dashboard() {
               <select
                 value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value)}
-                className="text-sm border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                className="text-xs border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
               >
                 <option value="All">All CRM Status</option>
                 <option value="Uncontacted">Uncontacted</option>
@@ -524,102 +553,190 @@ export default function Dashboard() {
 
           {/* Scrollable table */}
           <div className="overflow-x-auto overflow-y-auto flex-1">
-            <table className="w-full text-left border-collapse select-none">
-              <thead className="sticky top-0 bg-gray-50 shadow-sm z-10">
+            <table className="w-full text-left border-collapse select-none text-sm">
+              <thead className="sticky top-0 bg-gray-50 shadow-sm z-10 text-xs text-gray-700">
                 <tr className="border-b border-gray-200">
-                  <th className="p-4 font-semibold text-gray-700 cursor-pointer hover:bg-gray-100" onClick={() => requestSort("name")}>
+                  <th className="p-3 font-semibold cursor-pointer hover:bg-gray-100" onClick={() => requestSort("name")}>
                     Business{getSortIcon("name")}
                   </th>
-                  <th className="p-4 font-semibold text-gray-700">Phone</th>
-                  <th className="p-4 font-semibold text-gray-700">Link</th>
-                  <th className="p-4 font-semibold text-gray-700 cursor-pointer hover:bg-gray-100" onClick={() => requestSort("auditStatus")}>
+                  <th className="p-3 font-semibold">Phone / Mobile</th>
+                  <th className="p-3 font-semibold">Site & Tech</th>
+                  <th className="p-3 font-semibold cursor-pointer hover:bg-gray-100" onClick={() => requestSort("auditStatus")}>
                     Audit{getSortIcon("auditStatus")}
                   </th>
-                  <th className="p-4 font-semibold text-gray-700 cursor-pointer hover:bg-gray-100" onClick={() => requestSort("performanceScore")}>
-                    Speed{getSortIcon("performanceScore")}
+                  <th className="p-3 font-semibold cursor-pointer hover:bg-gray-100" onClick={() => requestSort("psiPerformanceScore")}>
+                    Speed{getSortIcon("psiPerformanceScore")}
                   </th>
-                  <th className="p-4 font-semibold text-gray-700 cursor-pointer hover:bg-gray-100" onClick={() => requestSort("seoScore")}>
-                    SEO{getSortIcon("seoScore")}
+                  <th className="p-3 font-semibold cursor-pointer hover:bg-gray-100" onClick={() => requestSort("psiSeoScore")}>
+                    SEO{getSortIcon("psiSeoScore")}
                   </th>
-                  <th className="p-4 font-semibold text-gray-700 cursor-pointer hover:bg-gray-100" onClick={() => requestSort("mobileLoadTime")}>
-                    Load{getSortIcon("mobileLoadTime")}
+                  <th className="p-3 font-semibold cursor-pointer hover:bg-gray-100" onClick={() => requestSort("psiLcpMs")}>
+                    Load{getSortIcon("psiLcpMs")}
                   </th>
-                  <th className="p-4 font-semibold text-gray-700 cursor-pointer hover:bg-gray-100 w-40" onClick={() => requestSort("status")}>
-                    Status{getSortIcon("status")}
+                  <th className="p-3 font-semibold cursor-pointer hover:bg-gray-100 w-36" onClick={() => requestSort("status")}>
+                    CRM{getSortIcon("status")}
                   </th>
                 </tr>
               </thead>
               <tbody>
                 {displayedLeads.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="p-12 text-center">
-                      <p className="text-gray-400 text-sm">No leads match your filters.</p>
+                    <td colSpan={8} className="p-12 text-center text-gray-400">
+                      No leads match your filters.
                     </td>
                   </tr>
                 ) : (
                   displayedLeads.map((lead) => {
                     const isAuditingThis = auditingLeadId === lead.id;
                     const canAudit = lead.website && !lead.website.includes("facebook.com");
+                    const normalizedAudit = (lead.auditStatus || "").toUpperCase();
+
+                    const isMobile = lead.phoneStatus === "VERIFIED_MOBILE";
+                    const isScraped = lead.phoneSource === "SCRAPE";
+                    const displayNumber = lead.mobileNumber || lead.phone;
 
                     return (
                       <tr key={lead.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                        <td className="p-4">
+                        {/* Business & Location */}
+                        <td className="p-3">
                           <div className="font-medium text-gray-900">{lead.name}</div>
-                          <div className="text-sm text-gray-500">{lead.suburb}</div>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className="text-xs text-gray-500">{lead.suburb}</span>
+                            {lead.ownerName && (
+                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                                👤 {lead.ownerName}
+                              </span>
+                            )}
+                          </div>
                         </td>
-                        <td className="p-4 text-gray-700 text-sm">{lead.phone || "N/A"}</td>
-                        <td className="p-4">
-                          {lead.website ? (
-                            <a
-                              href={lead.website.startsWith("http") ? lead.website : `https://${lead.website}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-blue-600 hover:underline text-sm"
-                            >
-                              {lead.website.includes("facebook") ? "Facebook" : "Website"}
-                            </a>
+
+                        {/* Phone / Mobile Enrichment */}
+                        <td className="p-3">
+                          {displayNumber ? (
+                            <div className="space-y-0.5">
+                              <div className="font-mono text-xs text-gray-800">{displayNumber}</div>
+                              {isMobile ? (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800">
+                                  📱 Mobile {isScraped && <span className="text-[9px] font-normal">(Scraped)</span>}
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600">
+                                  📞 Landline
+                                </span>
+                              )}
+                            </div>
                           ) : (
-                            <span className="text-gray-400 text-sm">Blank</span>
+                            <span className="text-gray-400 text-xs">No phone</span>
                           )}
                         </td>
-                        <td className="p-4">
+
+                        {/* Link & Tech Stack */}
+                        <td className="p-3">
+                          {lead.website ? (
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1.5">
+                                <a
+                                  href={lead.website.startsWith("http") ? lead.website : `https://${lead.website}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-blue-600 hover:underline text-xs truncate max-w-[140px] block"
+                                >
+                                  {lead.website.includes("facebook") ? "Facebook Page" : "Website ↗"}
+                                </a>
+                                {lead.mobileScreenshot && (
+                                  <button
+                                    onClick={() => setPreviewScreenshot({ name: lead.name, img: lead.mobileScreenshot })}
+                                    className="text-[11px] hover:scale-110 transition-transform"
+                                    title="View mobile screenshot"
+                                  >
+                                    📸
+                                  </button>
+                                )}
+                              </div>
+                              {lead.techStackCms && (
+                                <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-50 text-purple-700 border border-purple-200">
+                                  {lead.techStackCms}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-gray-400 text-xs">Blank</span>
+                          )}
+                        </td>
+
+                        {/* Audit Status */}
+                        <td className="p-3">
                           <div className="flex items-center gap-1.5">
-                            <span className={`px-2 py-1 rounded text-xs font-medium ${
-                              lead.auditStatus === "Audited"  ? "bg-green-100 text-green-800"  :
-                              lead.auditStatus === "Pending"  ? "bg-yellow-100 text-yellow-800" :
-                              lead.auditStatus === "Failed"   ? "bg-red-100 text-red-800"      :
-                              "bg-gray-100 text-gray-600"
-                            }`}>
-                              {isAuditingThis ? "Auditing..." : lead.auditStatus}
+                            <span
+                              className={`px-2 py-0.5 rounded text-[11px] font-medium ${
+                                normalizedAudit === "SUCCESS" || normalizedAudit === "AUDITED"
+                                  ? "bg-green-100 text-green-800"
+                                  : normalizedAudit === "PARTIAL_FAIL"
+                                  ? "bg-amber-100 text-amber-800"
+                                  : normalizedAudit === "PENDING"
+                                  ? "bg-yellow-100 text-yellow-800"
+                                  : normalizedAudit === "FAILED"
+                                  ? "bg-red-100 text-red-800"
+                                  : "bg-gray-100 text-gray-600"
+                              }`}
+                              title={lead.auditErrorLog ? JSON.stringify(lead.auditErrorLog) : undefined}
+                            >
+                              {isAuditingThis
+                                ? "Auditing..."
+                                : normalizedAudit === "PARTIAL_FAIL"
+                                ? "Partial"
+                                : normalizedAudit}
                             </span>
                             {canAudit && (
                               <button
                                 onClick={() => handleSingleAudit(lead.id)}
                                 disabled={isAuditingThis}
-                                className="text-xs text-gray-400 hover:text-blue-600 p-1 hover:bg-gray-200 rounded transition-colors"
-                                title="Run/Retry PageSpeed audit on this website"
+                                className="text-xs text-gray-400 hover:text-blue-600 p-0.5 hover:bg-gray-200 rounded transition-colors"
+                                title="Run/Retry audit on this website"
                               >
                                 ↺
                               </button>
                             )}
                           </div>
                         </td>
-                        <td className="p-4">
-                          {lead.performanceScore != null ? (
-                            <span className={`font-semibold text-sm ${lead.performanceScore < 50 ? "text-red-600" : "text-gray-800"}`}>
-                              {lead.performanceScore}
+
+                        {/* Performance Score */}
+                        <td className="p-3">
+                          {lead.psiPerformanceScore != null ? (
+                            <span
+                              className={`font-semibold text-xs ${
+                                lead.psiPerformanceScore < 50
+                                  ? "text-red-600 font-bold"
+                                  : "text-gray-800"
+                              }`}
+                            >
+                              {lead.psiPerformanceScore}
                             </span>
-                          ) : <span className="text-gray-400">—</span>}
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
                         </td>
-                        <td className="p-4 text-sm text-gray-700">{lead.seoScore ?? <span className="text-gray-400">—</span>}</td>
-                        <td className="p-4 text-sm text-gray-700">
-                          {lead.mobileLoadTime ? `${lead.mobileLoadTime}s` : <span className="text-gray-400">—</span>}
+
+                        {/* SEO Score */}
+                        <td className="p-3 text-xs text-gray-700">
+                          {lead.psiSeoScore != null ? lead.psiSeoScore : <span className="text-gray-400">—</span>}
                         </td>
-                        <td className="p-4">
+
+                        {/* Mobile Load Time */}
+                        <td className="p-3 text-xs text-gray-700">
+                          {lead.psiLcpMs != null ? (
+                            `${(lead.psiLcpMs / 1000).toFixed(2)}s`
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </td>
+
+                        {/* CRM Status */}
+                        <td className="p-3">
                           <select
                             value={lead.status}
                             onChange={(e) => updateStatus(lead.id, e.target.value)}
-                            className="bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 w-full p-2"
+                            className="bg-white border border-gray-300 text-gray-900 text-xs rounded-lg focus:ring-blue-500 focus:border-blue-500 w-full p-1.5"
                           >
                             <option value="Uncontacted">Uncontacted</option>
                             <option value="Left Voicemail">Left Voicemail</option>
@@ -636,6 +753,37 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Mobile Screenshot Modal Preview */}
+      {previewScreenshot && (
+        <div
+          className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-xs"
+          onClick={() => setPreviewScreenshot(null)}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-sm w-full p-4 shadow-2xl space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b pb-2">
+              <h3 className="font-semibold text-sm text-gray-800 truncate">{previewScreenshot.name}</h3>
+              <button
+                onClick={() => setPreviewScreenshot(null)}
+                className="text-gray-400 hover:text-gray-600 text-lg leading-none"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="rounded-xl overflow-hidden border border-gray-200 bg-gray-100 flex items-center justify-center max-h-[500px]">
+              <img
+                src={previewScreenshot.img}
+                alt="Mobile preview"
+                className="w-full h-auto object-contain"
+              />
+            </div>
+            <p className="text-[11px] text-gray-400 text-center">Mobile viewport captured during Lighthouse audit</p>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
