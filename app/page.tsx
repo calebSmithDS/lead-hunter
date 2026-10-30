@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import LeadDetailModal, { Lead } from "./components/LeadDetailModal";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -140,7 +141,7 @@ export default function Dashboard() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [auditingLeadId, setAuditingLeadId] = useState<string | null>(null);
   const [isBulkAuditing, setIsBulkAuditing] = useState(false);
-  const [previewScreenshot, setPreviewScreenshot] = useState<{ name: string; img: string } | null>(null);
+  const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
 
   // Filtering & Sorting State
   const [filterType, setFilterType] = useState("All");
@@ -596,7 +597,11 @@ export default function Dashboard() {
                     const displayNumber = lead.mobileNumber || lead.phone;
 
                     return (
-                      <tr key={lead.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+                      <tr
+                        key={lead.id}
+                        onClick={() => setSelectedLead(lead)}
+                        className="border-b border-gray-100 hover:bg-blue-50/40 cursor-pointer transition-colors"
+                      >
                         {/* Business & Location */}
                         <td className="p-3">
                           <div className="font-medium text-gray-900">{lead.name}</div>
@@ -631,7 +636,7 @@ export default function Dashboard() {
                         </td>
 
                         {/* Link & Tech Stack */}
-                        <td className="p-3">
+                        <td className="p-3" onClick={(e) => e.stopPropagation()}>
                           {lead.website ? (
                             <div className="space-y-1">
                               <div className="flex items-center gap-1.5">
@@ -643,15 +648,6 @@ export default function Dashboard() {
                                 >
                                   {lead.website.includes("facebook") ? "Facebook Page" : "Website ↗"}
                                 </a>
-                                {lead.mobileScreenshot && (
-                                  <button
-                                    onClick={() => setPreviewScreenshot({ name: lead.name, img: lead.mobileScreenshot })}
-                                    className="text-[11px] hover:scale-110 transition-transform"
-                                    title="View mobile screenshot"
-                                  >
-                                    📸
-                                  </button>
-                                )}
                               </div>
                               {lead.techStackCms && (
                                 <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-50 text-purple-700 border border-purple-200">
@@ -689,7 +685,10 @@ export default function Dashboard() {
                             </span>
                             {canAudit && (
                               <button
-                                onClick={() => handleSingleAudit(lead.id)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSingleAudit(lead.id);
+                                }}
                                 disabled={isAuditingThis}
                                 className="text-xs text-gray-400 hover:text-blue-600 p-0.5 hover:bg-gray-200 rounded transition-colors"
                                 title="Run/Retry audit on this website"
@@ -732,7 +731,7 @@ export default function Dashboard() {
                         </td>
 
                         {/* CRM Status */}
-                        <td className="p-3">
+                        <td className="p-3" onClick={(e) => e.stopPropagation()}>
                           <select
                             value={lead.status}
                             onChange={(e) => updateStatus(lead.id, e.target.value)}
@@ -754,36 +753,13 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Mobile Screenshot Modal Preview */}
-      {previewScreenshot && (
-        <div
-          className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-xs"
-          onClick={() => setPreviewScreenshot(null)}
-        >
-          <div
-            className="bg-white rounded-2xl max-w-sm w-full p-4 shadow-2xl space-y-3"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b pb-2">
-              <h3 className="font-semibold text-sm text-gray-800 truncate">{previewScreenshot.name}</h3>
-              <button
-                onClick={() => setPreviewScreenshot(null)}
-                className="text-gray-400 hover:text-gray-600 text-lg leading-none"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="rounded-xl overflow-hidden border border-gray-200 bg-gray-100 flex items-center justify-center max-h-[500px]">
-              <img
-                src={previewScreenshot.img}
-                alt="Mobile preview"
-                className="w-full h-auto object-contain"
-              />
-            </div>
-            <p className="text-[11px] text-gray-400 text-center">Mobile viewport captured during Lighthouse audit</p>
-          </div>
-        </div>
-      )}
+      {/* Lead Detail Modal */}
+      <LeadDetailModal
+        lead={selectedLead}
+        isOpen={Boolean(selectedLead)}
+        onClose={() => setSelectedLead(null)}
+        onUpdateStatus={updateStatus}
+      />
     </main>
   );
 }
