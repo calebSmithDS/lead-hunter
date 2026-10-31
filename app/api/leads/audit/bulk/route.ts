@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { auditLead } from '@/lib/audit';
 
+export const maxDuration = 60; // Allow Vercel functions up to 60s
+
 export async function POST(request: Request) {
   try {
     const { statusFilter = 'PENDING' } = await request.json().catch(() => ({}));
@@ -22,7 +24,7 @@ export async function POST(request: Request) {
 
     const leads = await prisma.lead.findMany({
       where: whereCondition,
-      take: 25,
+      take: 5, // Audit in fast batches of 5 to comfortably complete within Vercel's execution window
     });
 
     if (leads.length === 0) {
@@ -34,8 +36,6 @@ export async function POST(request: Request) {
       if (!lead.website) continue;
       const res = await auditLead(lead.id, lead.website);
       results.push({ id: lead.id, name: lead.name, ...res });
-      // Rate-limit buffer
-      await new Promise((r) => setTimeout(r, 1200));
     }
 
     return NextResponse.json({

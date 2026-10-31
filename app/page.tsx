@@ -364,7 +364,17 @@ export default function Dashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ statusFilter }),
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          res.status === 504 || text.includes("FUNCTION_INVOCATION_TIMEOUT")
+            ? "Vercel serverless timeout (exceeded 15s limit). Bulk auditing needs to process in smaller chunks or via background queues."
+            : `Server returned non-JSON response (${res.status}): ${text.slice(0, 120)}`
+        );
+      }
       alert(data.message || `Processed ${data.processed} leads.`);
       await fetchLeads();
     } catch (err: any) {
