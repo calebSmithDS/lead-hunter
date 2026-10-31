@@ -359,23 +359,17 @@ export default function Dashboard() {
   const handleBulkAudit = async (statusFilter = "PENDING") => {
     setIsBulkAuditing(true);
     try {
-      const res = await fetch("/api/leads/audit/bulk", {
+      // Dispatches the batch to QStash asynchronously so Vercel never times out
+      const res = await fetch("/api/leads/audit/queue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ statusFilter }),
       });
-      const text = await res.text();
-      let data: any;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error(
-          res.status === 504 || text.includes("FUNCTION_INVOCATION_TIMEOUT")
-            ? "Vercel serverless timeout (exceeded 15s limit). Bulk auditing needs to process in smaller chunks or via background queues."
-            : `Server returned non-JSON response (${res.status}): ${text.slice(0, 120)}`
-        );
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to dispatch audits to background queue.");
       }
-      alert(data.message || `Processed ${data.processed} leads.`);
+      alert(data.message || `Queued ${data.queuedCount} audits to process in background.`);
       await fetchLeads();
     } catch (err: any) {
       alert(`Bulk audit failed: ${err.message}`);
