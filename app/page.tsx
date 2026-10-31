@@ -1,7 +1,18 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import dynamic from "next/dynamic";
 import LeadDetailModal, { Lead } from "./components/LeadDetailModal";
+
+// Dynamically import Leaflet Map with SSR disabled (Leaflet requires browser window)
+const SpatialMap = dynamic(() => import("./components/SpatialMap"), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-[420px] rounded-xl bg-gray-100 flex items-center justify-center text-gray-400 text-sm animate-pulse border border-gray-200">
+      Loading interactive map...
+    </div>
+  ),
+});
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -63,8 +74,8 @@ function ProgressPanel({
         </div>
 
         <div className="text-xs text-blue-600 space-y-0.5">
-          <p><span className="font-medium">Industries:</span> {keyword || "—"}</p>
-          <p><span className="font-medium">Locations:</span> {location || "—"}</p>
+          <p><span className="font-medium">Industry:</span> {keyword || "—"}</p>
+          <p><span className="font-medium">Territory:</span> {location || "—"}</p>
         </div>
 
         <p className="text-xs text-blue-500 border-t border-blue-200 pt-3">
@@ -87,7 +98,7 @@ function ProgressPanel({
         </div>
         <button
           onClick={onNewHunt}
-          className="w-full py-2 rounded-lg text-sm font-semibold border border-green-300 text-green-700 hover:bg-green-100 transition-colors"
+          className="w-full py-2.5 rounded-lg text-sm font-semibold border border-green-300 text-green-700 hover:bg-green-100 transition-colors"
         >
           Start Another Hunt
         </button>
@@ -131,7 +142,11 @@ function ProgressPanel({
 
 export default function Dashboard() {
   const [keyword, setKeyword] = useState("");
-  const [location, setLocation] = useState("");
+  const [drawnGeoJson, setDrawnGeoJson] = useState<any | null>(null);
+  const [mapClearTrigger, setMapClearTrigger] = useState<number>(0);
+  const [spatialWarning, setSpatialWarning] = useState<string | null>(null);
+  const [isSubmittingSpatial, setIsSubmittingSpatial] = useState(false);
+
   const [huntState, setHuntState] = useState<HuntState>("idle");
   const [leadsFound, setLeadsFound] = useState(0);
   const [activeKeyword, setActiveKeyword] = useState("");
@@ -149,6 +164,10 @@ export default function Dashboard() {
   const [filterStatus, setFilterStatus] = useState("All");
   const [filterPhone, setFilterPhone] = useState("All");
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
+
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -209,33 +228,71 @@ export default function Dashboard() {
     return stopPolling;
   }, [fetchLeads, startPolling, stopPolling]);
 
-  const handleHunt = async (e: React.FormEvent) => {
+  // Spatial Hunt Trigger Handler
+  const handleSpatialHunt = async (e: React.FormEvent) => {
     e.preventDefault();
-    setHuntState("running");
-    setLeadsFound(0);
-    setActiveKeyword(keyword);
-    setActiveLocation(location);
-    setKeyword("");
+    if (!drawnGeoJson) {
+      alert("Please draw a polygon boundary on the map first to select your search area.");
+      return;
+    }
+
+    setIsSubmittingSpatial(true);
+    setSpatialWarning(null);
 
     try {
-      const res = await fetch("/api/jobs/trigger", {
+      // 1. PostGIS Spatial Intersection & Deduplication Check
+      const spatialRes = await fetch("/api/spatial/campaign", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keyword, location }),
+        body: JSON.stringify({ keyword, geojson: drawnGeoJson }),
       });
 
-      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      const spatialData = await spatialRes.json();
 
-      const data = await res.json();
-      if (data.success) {
-        localStorage.setItem("activeJobId", data.jobId);
-        startPolling(data.jobId);
+      // Deduplication check: territory already scraped recently
+      if (spatialData.duplicate) {
+        setSpatialWarning(spatialData.message);
+        setIsSubmittingSpatial(false);
+        return;
+      }
+
+      if (!spatialData.success) {
+        alert(spatialData.message || "No postcodes found inside this boundary.");
+        setIsSubmittingSpatial(false);
+        return;
+      }
+
+      // 2. Trigger Outscraper Bulk Job using the matched suburbs list
+      const suburbsToScrape = spatialData.matchedSuburbs.slice(0, 15).join(", "); // Sample batch
+      setActiveKeyword(keyword);
+      setActiveLocation(`${spatialData.suburbCount} suburbs (${spatialData.postcodeCount} postcodes)`);
+      setHuntState("running");
+      setLeadsFound(0);
+
+      const triggerRes = await fetch("/api/jobs/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          keyword,
+          location: suburbsToScrape,
+        }),
+      });
+
+      const triggerData = await triggerRes.json();
+      if (triggerData.success) {
+        localStorage.setItem("activeJobId", triggerData.jobId);
+        startPolling(triggerData.jobId);
+        setKeyword("");
+        setDrawnGeoJson(null);
+        setMapClearTrigger((prev) => prev + 1);
       } else {
         setHuntState("failed");
       }
-    } catch (error) {
-      console.error("Hunt trigger error:", error);
+    } catch (err: any) {
+      console.error("Spatial hunt error:", err);
       setHuntState("failed");
+    } finally {
+      setIsSubmittingSpatial(false);
     }
   };
 
@@ -245,6 +302,9 @@ export default function Dashboard() {
     setActiveKeyword("");
     setActiveLocation("");
     setActiveJobId(null);
+    setSpatialWarning(null);
+    setDrawnGeoJson(null);
+    setMapClearTrigger((prev) => prev + 1);
   };
 
   const handleForceSync = async () => {
@@ -328,7 +388,6 @@ export default function Dashboard() {
   const displayedLeads = useMemo(() => {
     let processed = [...leads];
 
-    // Filter by Type
     if (filterType !== "All") {
       processed = processed.filter((lead) => {
         const url = lead.website || "";
@@ -339,7 +398,6 @@ export default function Dashboard() {
       });
     }
 
-    // Filter by Phone Type
     if (filterPhone !== "All") {
       processed = processed.filter((lead) => {
         if (filterPhone === "Mobile") return lead.phoneStatus === "VERIFIED_MOBILE";
@@ -348,7 +406,6 @@ export default function Dashboard() {
       });
     }
 
-    // Filter by Audit Status
     if (filterAudit !== "All") {
       processed = processed.filter((lead) => {
         const s = (lead.auditStatus || "").toUpperCase();
@@ -361,12 +418,10 @@ export default function Dashboard() {
       });
     }
 
-    // Filter by CRM Status
     if (filterStatus !== "All") {
       processed = processed.filter((lead) => lead.status === filterStatus);
     }
 
-    // Sorting
     if (sortConfig) {
       processed.sort((a, b) => {
         const aVal = a[sortConfig.key];
@@ -381,6 +436,18 @@ export default function Dashboard() {
 
     return processed;
   }, [leads, filterType, filterAudit, filterStatus, filterPhone, sortConfig]);
+
+  // Reset to page 1 whenever filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterType, filterAudit, filterStatus, filterPhone]);
+
+  // Paginated Window of Leads
+  const totalPages = Math.max(1, Math.ceil(displayedLeads.length / pageSize));
+  const paginatedLeads = useMemo(() => {
+    const startIndex = (currentPage - 1) * pageSize;
+    return displayedLeads.slice(startIndex, startIndex + pageSize);
+  }, [displayedLeads, currentPage, pageSize]);
 
   const failedCount = useMemo(
     () => leads.filter((l) => (l.auditStatus || "").toUpperCase() === "FAILED").length,
@@ -407,47 +474,80 @@ export default function Dashboard() {
   // ── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <main className="min-h-screen bg-gray-50 p-6 md:p-8">
-      <div className="max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
+    <main className="min-h-screen bg-gray-50 p-4 md:p-6 lg:p-8">
+      <div className="max-w-[1700px] mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
 
-        {/* ── LEFT: Form + Progress Panel ─────────────────────────────────── */}
-        <div className="col-span-1 bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-fit">
-          <h1 className="text-3xl font-bold text-gray-900 mb-1">Lead Hunter</h1>
-          <p className="text-gray-500 mb-6">Grid search tradesmen who need a digital upgrade.</p>
+        {/* ── LEFT COLUMN: Spatial Search & Map (4 cols = 1/3 desktop, stacked on mobile) ── */}
+        <div className="col-span-1 lg:col-span-4 bg-white p-5 rounded-2xl shadow-sm border border-gray-100 h-fit space-y-5">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Spatial Lead Hunter</h1>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Draw a polygon over target territories to discover & audit local trades.
+            </p>
+          </div>
 
           {huntState === "idle" && (
-            <form onSubmit={handleHunt} className="space-y-5">
+            <form onSubmit={handleSpatialHunt} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  Industries <span className="text-gray-400 font-normal">(comma separated)</span>
+                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1.5">
+                  Job Title / Trade
                 </label>
                 <input
                   type="text"
                   required
                   value={keyword}
                   onChange={(e) => setKeyword(e.target.value)}
-                  placeholder="e.g. Plumber, Electrician"
-                  className="text-gray-900 w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  placeholder="e.g. Plumber, Electrician, Roofer"
+                  className="text-gray-900 w-full px-3.5 py-2.5 text-sm border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 />
               </div>
+
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  Locations <span className="text-gray-400 font-normal">(comma separated)</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={location}
-                  onChange={(e) => setLocation(e.target.value)}
-                  placeholder="e.g. Norwood SA, Marion SA"
-                  className="text-gray-900 w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                    Interactive Territory Map
+                  </label>
+                  {drawnGeoJson && (
+                    <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                      ✓ Polygon Ready
+                    </span>
+                  )}
+                </div>
+
+                {/* Leaflet Map with polygon drawing toolbar */}
+                <SpatialMap
+                  clearTrigger={mapClearTrigger}
+                  onPolygonDrawn={(geom) => {
+                    setDrawnGeoJson(geom);
+                    setSpatialWarning(null);
+                  }}
+                  onPolygonCleared={() => {
+                    setDrawnGeoJson(null);
+                    setSpatialWarning(null);
+                  }}
                 />
               </div>
+
+              {/* Duplicate Overlap Warning */}
+              {spatialWarning && (
+                <div className="p-3.5 rounded-xl border border-amber-300 bg-amber-50 text-amber-900 text-xs space-y-1">
+                  <p className="font-semibold flex items-center gap-1.5">
+                    <span>⚠️</span> Territory Scraped Recently
+                  </p>
+                  <p className="text-amber-800 leading-relaxed">{spatialWarning}</p>
+                </div>
+              )}
+
               <button
                 type="submit"
-                className="w-full py-3 rounded-lg font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+                disabled={isSubmittingSpatial}
+                className={`w-full py-3 rounded-xl font-semibold text-sm text-white transition-all shadow-sm ${
+                  isSubmittingSpatial
+                    ? "bg-blue-300 cursor-not-allowed"
+                    : "bg-blue-600 hover:bg-blue-700 active:scale-[0.99]"
+                }`}
               >
-                Start Bulk Hunt
+                {isSubmittingSpatial ? "Calculating PostGIS Boundary..." : "Run Spatial Hunt"}
               </button>
             </form>
           )}
@@ -463,13 +563,13 @@ export default function Dashboard() {
           />
         </div>
 
-        {/* ── RIGHT: Data Table ─────────────────────────────────────────── */}
-        <div className="col-span-1 lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-[calc(100vh-4rem)]">
+        {/* ── RIGHT COLUMN: Data Table (8 cols = 2/3 desktop) ────────────────── */}
+        <div className="col-span-1 lg:col-span-8 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-[calc(100vh-4rem)]">
 
           {/* Table header */}
-          <div className="p-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center bg-gray-50 gap-4">
+          <div className="p-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center bg-gray-50/50 gap-4">
             <div className="flex items-center gap-2.5">
-              <h2 className="font-semibold text-gray-800">
+              <h2 className="font-semibold text-gray-800 text-sm">
                 Database Records <span className="text-gray-500 font-normal">({displayedLeads.length})</span>
               </h2>
               {isRunning && (
@@ -486,7 +586,7 @@ export default function Dashboard() {
                 <button
                   onClick={() => handleBulkAudit("FAILED")}
                   disabled={isBulkAuditing}
-                  className="px-2.5 py-1.5 text-xs font-semibold rounded-md border border-red-300 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-50"
+                  className="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-red-300 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-50"
                   title="Retry audit on all failed websites"
                 >
                   {isBulkAuditing ? "Auditing..." : `Retry Failed (${failedCount})`}
@@ -497,7 +597,7 @@ export default function Dashboard() {
                 <button
                   onClick={() => handleBulkAudit("PENDING")}
                   disabled={isBulkAuditing}
-                  className="px-2.5 py-1.5 text-xs font-semibold rounded-md border border-yellow-300 bg-yellow-50 text-yellow-800 hover:bg-yellow-100 disabled:opacity-50"
+                  className="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-yellow-300 bg-yellow-50 text-yellow-800 hover:bg-yellow-100 disabled:opacity-50"
                   title="Audit pending websites now"
                 >
                   {isBulkAuditing ? "Auditing..." : `Audit Pending (${pendingCount})`}
@@ -507,7 +607,7 @@ export default function Dashboard() {
               <select
                 value={filterPhone}
                 onChange={(e) => setFilterPhone(e.target.value)}
-                className="text-xs font-medium border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                className="text-xs font-medium border border-gray-300 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
               >
                 <option value="All">All Phones</option>
                 <option value="Mobile">📱 Mobiles Only</option>
@@ -517,7 +617,7 @@ export default function Dashboard() {
               <select
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value)}
-                className="text-xs border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
               >
                 <option value="All">All Types</option>
                 <option value="Website">Website</option>
@@ -528,7 +628,7 @@ export default function Dashboard() {
               <select
                 value={filterAudit}
                 onChange={(e) => setFilterAudit(e.target.value)}
-                className="text-xs border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
               >
                 <option value="All">All Audits</option>
                 <option value="Audited">Audited (Success)</option>
@@ -541,7 +641,7 @@ export default function Dashboard() {
               <select
                 value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value)}
-                className="text-xs border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                className="text-xs border border-gray-300 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-blue-500 text-black bg-white"
               >
                 <option value="All">All CRM Status</option>
                 <option value="Uncontacted">Uncontacted</option>
@@ -555,7 +655,7 @@ export default function Dashboard() {
           {/* Scrollable table */}
           <div className="overflow-x-auto overflow-y-auto flex-1">
             <table className="w-full text-left border-collapse select-none text-sm">
-              <thead className="sticky top-0 bg-gray-50 shadow-sm z-10 text-xs text-gray-700">
+              <thead className="sticky top-0 bg-gray-50/90 backdrop-blur-xs shadow-xs z-10 text-xs text-gray-700">
                 <tr className="border-b border-gray-200">
                   <th className="p-3 font-semibold cursor-pointer hover:bg-gray-100" onClick={() => requestSort("name")}>
                     Business{getSortIcon("name")}
@@ -580,14 +680,14 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {displayedLeads.length === 0 ? (
+                {paginatedLeads.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="p-12 text-center text-gray-400">
                       No leads match your filters.
                     </td>
                   </tr>
                 ) : (
-                  displayedLeads.map((lead) => {
+                  paginatedLeads.map((lead) => {
                     const isAuditingThis = auditingLeadId === lead.id;
                     const canAudit = lead.website && !lead.website.includes("facebook.com");
                     const normalizedAudit = (lead.auditStatus || "").toUpperCase();
@@ -749,6 +849,50 @@ export default function Dashboard() {
                 )}
               </tbody>
             </table>
+          </div>
+
+          {/* Table Pagination Footer */}
+          <div className="p-3 border-t border-gray-200 bg-gray-50 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-gray-600">
+            <div className="flex items-center gap-2">
+              <span>Showing</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="bg-white border border-gray-300 rounded px-2 py-1 text-xs text-gray-800 font-medium focus:ring-1 focus:ring-blue-500"
+              >
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+              <span>
+                per page • <strong className="text-gray-900 font-semibold">{displayedLeads.length}</strong> total leads
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="px-2.5 py-1 rounded border border-gray-300 bg-white font-medium hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                ‹ Previous
+              </button>
+
+              <span className="px-2 py-1 font-semibold text-gray-800">
+                Page {currentPage} of {totalPages}
+              </span>
+
+              <button
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="px-2.5 py-1 rounded border border-gray-300 bg-white font-medium hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Next ›
+              </button>
+            </div>
           </div>
         </div>
       </div>

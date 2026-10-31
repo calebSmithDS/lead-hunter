@@ -60,3 +60,28 @@ model Lead {
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @default(now()) @updatedAt
 }
+
+// Spatial Bounding Box & Deduplication Campaigns
+model SearchCampaign {
+  id                String   @id @default(cuid())
+  keyword           String
+  normalizedKeyword String
+  geojson           Json
+  matchedPostcodes  String[]
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @default(now()) @updatedAt
+
+  @@index([normalizedKeyword])
+}
+
+// Australian Postcode & Suburb spatial points
+model PostcodeBoundary {
+  id        Int      @id @default(autoincrement())
+  postcode  String   @db.VarChar(10)
+  suburb    String   @db.VarChar(100)
+  state     String   @db.VarChar(10)
+  latitude  Float
+  longitude Float
+
+  @@index([postcode])
+}
